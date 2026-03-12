@@ -1,0 +1,75 @@
+Raw paste of multi-platform hardware sheet (as provided in chat)
+
+NOTE:
+- This file is intentionally kept close to the pasted text for traceability.
+- Use hardware_presets.json for script-consumable structured values.
+
+BEGIN_PASTE
+		BMG580	PTL
+						
+	slice		5	2
+	xecore/slice		4	6
+	L3 BANK		24	8
+	SQIDI		6	1
+	SIMD ALU0		16	16
+	SIMD ALU1		16	16
+	eu/xecore		8	8
+	l2 size(MB)		18	0
+	tile#		1	1
+	L1$ size kB		256	192
+	SLM byte/clock		256	256
+	banks/L1$		8	8
+	banks/l1sampler		8	8
+	PCIE byte/clock		64	64
+	STACK byte/clock		64	64
+	L3 CACHELINE SIZE		64	64
+	L1 CACHELINE SIZE		64	64
+	GRF kB/eu		64	64
+	banks/I$		4	4
+	depth/slice		2	8
+	copy engine		3	3
+	ccs count		4	4
+	GRF cacheline		64	64
+	accum read port		6	6
+	accum write ports		2	2
+	GRF banks		2	2
+	GRF read port/bank		2	2
+	GRF write port/bank		1	1
+	l3node		3	1
+	memclock GT/s		19	12.8
+	mem interface (bit)		192	64
+	pcie gen		5	5
+	pcie lanes		16	16
+	Thread/eu		8	10
+	l1 rd rate/clock		256	256
+	l1 wr rate/clock		128	128
+	l3 rate/bank/clock 	64	64
+	xecore/stlb		4	4
+	physcial SIMD &INT64		8	8
+	physcial SIMD &INT32		16	16
+	physcial SIMD &FP64		1	1
+	physcial SIMD &FP32		16	16
+	SIMD lane count			
+derived:						
+	SLM bw total		5120	3072
+	XeCore#		20	12
+	EU#		160	96
+	grf read ports		4	4
+	grf write ports		2	2
+	I$ banks total		80	48
+	L1 banks total		160	96
+	memory GB/s		456	102.4
+	Frequency (MHz)		2850	
+	FP16 theoretical Peak FLOPS (TFLOPS)		117	
+	BF16 theoretical Peak FLOPS (TFLOPS)		117	
+END_PASTE
+
+NOTES
+- `l1 rd rate/clock` and `l3 rate/bank/clock` are in bytes.
+- For cache-level bandwidth, focus on read only.
+- User-provided formulas:
+	- `bw_l1_gbs_per_xe = l1 rd rate/clock * frequency/1e6`
+	- `bw_lsc_gbs = l3 rate/bank/clock * L3 BANK * frequency /1e6`
+- Unit clarification:
+	- if `frequency` is expressed in `MHz`, then converting to `GB/s` is equivalently implemented as `bytes_per_clock * frequency_mhz / 1e3`
+	- this is the form used by the script to avoid ambiguity between `Hz` and `MHz`
