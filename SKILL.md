@@ -47,14 +47,18 @@ This skill is designed for Intel GPU (SYCL/XPU) workflows, but it works for any 
 ### Hardware presets (from your sheet)
 - Raw multi-platform sheet paste (for traceability): [references/hardware_sheet_raw_paste.txt](./references/hardware_sheet_raw_paste.txt)
 - Script-consumable presets (extensible): [references/hardware_presets.json](./references/hardware_presets.json)
+- Algorithm design reference: [references/gemm_tiling_design.md](./references/gemm_tiling_design.md)
+- L1-bound judgement and tuning reference: [references/l1_bound_judgement_and_tuning.md](./references/l1_bound_judgement_and_tuning.md)
 - `hardware_presets.json` is the standard format. Each preset preserves **all provided HW fields** under `fields`, using the original field names from the sheet.
 - The script consumes the `roofline` subset (`bw_mem_gbs`, `bw_lsc_gbs`, `bw_l1_gbs`, `peak_tflops_by_dtype`, `frequency_mhz`).
+- User-provided `peak_tflops` or `frequency_mhz` should take precedence over preset defaults. Only when both are absent should the preset default peak be used.
 - Cache-level roofs (`bw_l1_gbs`, `bw_lsc_gbs`) are read-only roofs.
 - If a preset does not explicitly provide `bw_l1_gbs` / `bw_lsc_gbs`, the script can derive them from the preserved HW fields when `Frequency (MHz)` and the relevant per-clock fields are available.
 - Unit convention for derived cache roofs:
   - the raw sheet formulas are written as `bytes_per_clock * frequency / 1e6`
   - in the script, `frequency` is stored as `MHz`, so the equivalent implementation for `GB/s` is `bytes_per_clock * frequency_mhz / 1e3`
 - If a preset provides `peak_tflops_by_dtype`, you can omit `--peak-tflops` for those dtypes.
+- If the user provides `frequency_mhz` but not `peak_tflops`, compute roof should be scaled from the preset's default frequency/peak when available.
 - Old flat preset formats are not supported.
 - You can select a platform at runtime via `--preset <name>`.
 - For example, `bmg580` now includes `Frequency (MHz)=2850` and `FP16/BF16 theoretical Peak FLOPS = 117`, so `--preset bmg580 --dtype bf16` can fill both compute and bandwidth roofs automatically.
@@ -91,3 +95,9 @@ The script prints:
 
 ## Notes for agents
 - If the user asks “L1/LSC bound?” but provides no per-level bytes/time, first answer compute-vs-DRAM using shape; then ask for the minimum extra info: `time_ms` and either (a) bytes counters or (b) the kernel’s tiling/reuse assumptions.
+- When explaining *why* a roof is active, use the GEMM hierarchy in [references/gemm_tiling_design.md](./references/gemm_tiling_design.md): `Global -> Block`, `Block -> Tile`, `Tile -> MMA Atom`.
+- For Intel pre-Xe4 platforms, prefer wording that reflects L1-oriented staging/prefetch rather than CUDA-specific `cp.async` assumptions.
+- When the user asks whether a GEMM configuration is `L1 bound`, first try to obtain the tiledMMA shape; if it is not given, ask for the tiledMMA config or the relevant source code.
+- When judging whether a tile is `L1 bound`, use the subgroup-level screening procedure in [references/l1_bound_judgement_and_tuning.md](./references/l1_bound_judgement_and_tuning.md).
+- Do not confuse subgroup-level AI with the platform balance point: first compute subgroup-level AI from tiledMMA shape and subgroup layout, then compare it against `Peak/BW_L1`.
+- If the tile appears statically `L1 bound`, provide 2-4 tuning suggestions ranked by low accumulator proxy `M_sg * N_tile`, then mention that profiler `bytes_l1` is still needed for confirmation.

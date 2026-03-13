@@ -145,9 +145,33 @@ def _derive_roofline(preset: Optional[dict[str, Any]]) -> dict[str, Any]:
     return roofline
 
 
-def _resolve_peak_tflops(explicit: Optional[float], dtype: str, preset: Optional[dict[str, Any]]) -> Optional[float]:
+def _scale_peak_from_frequency(dtype: str, frequency_mhz: Optional[float], preset: Optional[dict[str, Any]]) -> Optional[float]:
+    if frequency_mhz is None or not isinstance(preset, dict):
+        return None
+
+    roofline = _derive_roofline(preset)
+    base_frequency_mhz = _as_float(roofline.get("frequency_mhz"))
+    if base_frequency_mhz is None or base_frequency_mhz <= 0:
+        return None
+
+    peak_by_dtype = roofline.get("peak_tflops_by_dtype")
+    if not isinstance(peak_by_dtype, dict):
+        return None
+
+    base_peak = _as_float(peak_by_dtype.get(dtype))
+    if base_peak is None:
+        return None
+
+    return base_peak * frequency_mhz / base_frequency_mhz
+
+
+def _resolve_peak_tflops(explicit: Optional[float], dtype: str, frequency_mhz: Optional[float], preset: Optional[dict[str, Any]]) -> Optional[float]:
     if explicit is not None:
         return explicit
+
+    scaled_peak = _scale_peak_from_frequency(dtype, frequency_mhz, preset)
+    if scaled_peak is not None:
+        return scaled_peak
 
     roofline = _derive_roofline(preset)
     peak_by_dtype = roofline.get("peak_tflops_by_dtype")
@@ -158,8 +182,21 @@ def _resolve_peak_tflops(explicit: Optional[float], dtype: str, preset: Optional
     return _as_float(value)
 
 
-def _resolve_bandwidth_overrides(args: argparse.Namespace, preset: Optional[dict[str, Any]]) -> None:
+def _resolve_bandwidth_overrides(args: argparse.Namespace, preset: Optional[dict[str, Any]], frequency_mhz: Optional[float]) -> None:
     roofline = _derive_roofline(preset)
+    if frequency_mhz is not None:
+        base_frequency_mhz = _as_float(roofline.get("frequency_mhz"))
+        if base_frequency_mhz is not None and base_frequency_mhz > 0:
+            scale = frequency_mhz / base_frequency_mhz
+            if args.bw_l1_gbs is None:
+                bw_l1 = _as_float(roofline.get("bw_l1_gbs"))
+                if bw_l1 is not None:
+                    args.bw_l1_gbs = bw_l1 * scale
+            if args.bw_lsc_gbs is None:
+                bw_lsc = _as_float(roofline.get("bw_lsc_gbs"))
+                if bw_lsc is not None:
+                    args.bw_lsc_gbs = bw_lsc * scale
+
     if args.bw_mem_gbs is None:
         args.bw_mem_gbs = _as_float(roofline.get("bw_mem_gbs"))
     if args.bw_lsc_gbs is None:
@@ -381,6 +418,11 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
         choices=sorted(_PRESETS.keys()),
         help="Hardware preset to auto-fill known roofs from hardware_presets.json",
     )
+    p.add_argument(
+        "--frequency-mhz",
+        type=float,
+        help="Override runtime frequency in MHz; used to scale preset-derived compute/L1/LSC roofs when peak_tflops is not explicitly provided",
+    )
     p.add_argument("--bw-l1-gbs", type=float)
     p.add_argument("--bw-lsc-gbs", type=float)
     p.add_argument("--bw-mem-gbs", type=float)
@@ -410,14 +452,18 @@ def main() -> int:
     args = ap.parse_args()
 
     preset = _PRESETS.get(args.preset) if getattr(args, "preset", None) else None
+    frequency_mhz = args.frequency_mhz
+    if frequency_mhz is None and preset is not None:
+        frequency_mhz = _as_float(_derive_roofline(preset).get("frequency_mhz"))
+
     if preset is not None:
-        _resolve_bandwidth_overrides(args, preset)
+        _resolve_bandwidth_overrides(args, preset, args.frequency_mhz)
 
     dtype = args.dtype
     bytes_per_elem = _DTYPE_BYTES[dtype]
-    peak_tflops = _resolve_peak_tflops(args.peak_tflops, dtype, preset)
+    peak_tflops = _resolve_peak_tflops(args.peak_tflops, dtype, args.frequency_mhz, preset)
     if peak_tflops is None:
-        ap.error("--peak-tflops is required unless the selected preset provides peak_tflops_by_dtype for the chosen dtype")
+        ap.error("--peak-tflops is required unless the selected preset provides peak_tflops_by_dtype for the chosen dtype, or --frequency-mhz can be used to scale a preset default peak")
 
     roofs = Roofs(
         peak_tflops=peak_tflops,
