@@ -13,7 +13,7 @@
         "bw_mem_gbs": 456.0,
         "bw_l1_gbs_per_xe": 729.6,
         "bw_l1_gbs": 14592.0,
-        "bw_lsc_gbs": 4377.6,
+        "bw_llc_gbs": 4377.6,
         "notes": [
           "l1 rd rate/clock and l3 rate/bank/clock are bytes",
           "cache-level bandwidth uses read-only roof"

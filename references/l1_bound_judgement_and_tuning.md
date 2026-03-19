@@ -148,6 +148,43 @@ In the simplified subgroup read-only model, `K_tile` cancels out of `AI_{L1,sg}`
 
 `K_tile` still matters for scheduling, prefetch, and GRF pressure, but it is not the first knob for escaping static L1-bound behavior.
 
+## Tuning Tradeoffs
+
+Changing tiledMMA shape can improve `L1` pressure, but it is not free.
+
+### 1. Larger subgroup tiles usually increase register pressure
+
+If you increase `M_{sg}` or `N_tile`, you usually increase:
+- accumulator footprint
+- operand fragment footprint
+- reorder / staging footprint
+
+So even if `AI_{L1,sg}` improves, GRF pressure may also rise.
+
+### 2. More GRF pressure can reduce occupancy
+
+If the tiledMMA shape becomes too large:
+- fewer subgroups / work-groups may be resident
+- latency hiding may worsen
+- the kernel may stop looking purely `L1 bound` and instead become occupancy- or issue-limited
+
+So the usual goal is not to maximize tile size, but to cross the `L1` balance point with the smallest practical tile.
+
+### 3. `L1` improvement does not guarantee end-to-end speedup
+
+Escaping static `L1 bound` behavior is only part of the story.
+
+If a larger tiledMMA shape causes:
+- occupancy collapse
+- register spills
+- worse instruction scheduling
+
+then end-to-end performance may still get worse.
+
+### 4. Practical tuning rule
+
+Among candidate tiledMMA shapes that are no longer statically `L1 bound`, prefer the one with the smallest practical GRF footprint unless stronger MMA-atom or layout constraints dominate.
+
 ## Suggested Answer Structure
 
 1. State assumptions: tiledMMA shape, subgroup split, dtype, platform preset.

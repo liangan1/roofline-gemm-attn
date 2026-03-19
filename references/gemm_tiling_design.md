@@ -1,7 +1,7 @@
 # GEMM Tiling Design Notes
 
 This note captures algorithm-design knowledge that complements roofline analysis.
-It is intended for reasoning about *why* a GEMM is compute/L1/LSC/memory bound,
+It is intended for reasoning about *why* a GEMM is compute/L1/LLC/memory bound,
 not just *which* roof is active.
 
 ## Hierarchical View
@@ -24,11 +24,11 @@ Hardware mapping:
 - Intel SYCL/XPU: workgroup scheduled to a XeCore-grouping / execution context.
 
 Key consequence:
-- Different SMs / XeCores share outer cache resources (`LSC` / `L2`), so block scheduling affects cache reuse and contention.
+- Different SMs / XeCores share outer cache resources (`LLC` / `L2`), so block scheduling affects cache reuse and contention.
 
 Performance implications:
 - A schedule that improves producer-consumer locality across neighboring blocks may reduce GMEM traffic.
-- A schedule that destroys cross-block reuse can push the kernel toward `LSC` or `memory` bound behavior.
+- A schedule that destroys cross-block reuse can push the kernel toward `LLC` or `memory` bound behavior.
 - For skinny-M or skinny-N GEMMs, block shape and block traversal order can materially change outer-cache reuse of `A` or `B`.
 
 Questions to ask:
@@ -50,14 +50,14 @@ Key difference vs CUDA:
 - On Intel pre-Xe4, the optimization story is often closer to “shape tiles and prefetch behavior so L1 residency and reuse are good enough.”
 
 Performance implications:
-- If tile reuse is weak, the kernel becomes more sensitive to `LSC` / `memory` bandwidth.
+- If tile reuse is weak, the kernel becomes more sensitive to `LLC` / `memory` bandwidth.
 - If tile sizes are too large, register pressure and occupancy can collapse.
 - If tile sizes are too small, math engines are starved and per-tile overhead dominates.
 
 Questions to ask:
 - Is the chosen tile shape increasing reuse of the bandwidth-dominant operand?
 - Is the implementation limited by L1 capacity, prefetch distance, or outer-cache refill pressure?
-- Would changing tile shape shift pressure from DRAM to LSC, or from LSC to L1?
+- Would changing tile shape shift pressure from DRAM to LLC, or from LLC to L1?
 
 ## 3. Tile -> MMA Atom
 
@@ -88,7 +88,7 @@ Use the hierarchy to interpret roofline outcomes:
 
 - `memory bound`
   - Usually points to weak global reuse, poor block scheduling, or a bandwidth-dominant operand overwhelming outer-cache reuse.
-- `LSC bound`
+- `LLC bound`
   - Usually points to inter-block or inter-tile reuse not being converted into sufficient locality, or to outer-cache contention.
 - `L1 bound`
   - Often means the implementation has already reduced DRAM pressure, but the `Tile -> MMA Atom` feed path is still bandwidth-limited.
@@ -106,7 +106,7 @@ For shapes like `M << N, K` or `N << M, K`:
 
 ## Intel-specific Summary
 
-- `Global -> Block`: watch outer-cache (`LSC` / `L2`) sharing across XeCores.
+- `Global -> Block`: watch outer-cache (`LLC` / `L2`) sharing across XeCores.
 - `Block -> Tile`: prefetch and L1-oriented staging matter more than CUDA-style `cp.async` narratives on pre-Xe4 platforms.
 - `Tile -> MMA Atom`: the `L1 -> GRF -> XMX` path is part of the critical throughput story.
 

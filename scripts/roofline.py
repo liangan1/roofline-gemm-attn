@@ -4,7 +4,7 @@
 Design goals:
 - Zero dependencies
 - Useful with either (a) only shape + peaks (theoretical, DRAM-level) or
-  (b) profiler bytes + time (multi-level attribution: L1/LSC/DRAM)
+    (b) profiler bytes + time (multi-level attribution: L1/LLC/DRAM)
 
 This is a high-level model; it does not attempt to infer cache reuse/tiling.
 """
@@ -34,7 +34,7 @@ def _load_presets() -> dict[str, dict[str, Any]]:
     The JSON is the source of truth. Each preset must use the new schema:
         {
             "<preset>": {
-                "roofline": {"bw_mem_gbs": ..., "bw_lsc_gbs": ..., "bw_l1_gbs": ...},
+                "roofline": {"bw_mem_gbs": ..., "bw_llc_gbs": ..., "bw_l1_gbs": ...},
                 "fields": {...}
             }
         }
@@ -51,7 +51,7 @@ def _load_presets() -> dict[str, dict[str, Any]]:
                 "bw_mem_gbs": 456.0,
                 "bw_l1_gbs_per_xe": 729.6,
                 "bw_l1_gbs": 14592.0,
-                "bw_lsc_gbs": 4377.6,
+                "bw_llc_gbs": 4377.6,
             },
             "fields": {},
         }
@@ -136,11 +136,11 @@ def _derive_roofline(preset: Optional[dict[str, Any]]) -> dict[str, Any]:
         if bw_l1_gbs_per_xe is not None and xecore_count is not None:
             roofline["bw_l1_gbs"] = bw_l1_gbs_per_xe * xecore_count
 
-    if _as_float(roofline.get("bw_lsc_gbs")) is None and frequency_mhz is not None:
+    if _as_float(roofline.get("bw_llc_gbs")) is None and frequency_mhz is not None:
         l3_rate = _as_float(fields.get("l3 rate/bank/clock"))
         l3_bank = _as_float(fields.get("L3 BANK"))
         if l3_rate is not None and l3_bank is not None:
-            roofline["bw_lsc_gbs"] = l3_rate * l3_bank * frequency_mhz / 1e3
+            roofline["bw_llc_gbs"] = l3_rate * l3_bank * frequency_mhz / 1e3
 
     return roofline
 
@@ -192,15 +192,15 @@ def _resolve_bandwidth_overrides(args: argparse.Namespace, preset: Optional[dict
                 bw_l1 = _as_float(roofline.get("bw_l1_gbs"))
                 if bw_l1 is not None:
                     args.bw_l1_gbs = bw_l1 * scale
-            if args.bw_lsc_gbs is None:
-                bw_lsc = _as_float(roofline.get("bw_lsc_gbs"))
-                if bw_lsc is not None:
-                    args.bw_lsc_gbs = bw_lsc * scale
+            if args.bw_llc_gbs is None:
+                bw_llc = _as_float(roofline.get("bw_llc_gbs"))
+                if bw_llc is not None:
+                    args.bw_llc_gbs = bw_llc * scale
 
     if args.bw_mem_gbs is None:
         args.bw_mem_gbs = _as_float(roofline.get("bw_mem_gbs"))
-    if args.bw_lsc_gbs is None:
-        args.bw_lsc_gbs = _as_float(roofline.get("bw_lsc_gbs"))
+    if args.bw_llc_gbs is None:
+        args.bw_llc_gbs = _as_float(roofline.get("bw_llc_gbs"))
     if args.bw_l1_gbs is None:
         args.bw_l1_gbs = _as_float(roofline.get("bw_l1_gbs"))
 
@@ -209,7 +209,7 @@ def _resolve_bandwidth_overrides(args: argparse.Namespace, preset: Optional[dict
 class Roofs:
     peak_tflops: float
     bw_l1_gbs: Optional[float] = None
-    bw_lsc_gbs: Optional[float] = None
+    bw_llc_gbs: Optional[float] = None
     bw_mem_gbs: Optional[float] = None
 
 
@@ -217,7 +217,7 @@ class Roofs:
 class Measured:
     time_ms: Optional[float] = None
     bytes_l1: Optional[float] = None
-    bytes_lsc: Optional[float] = None
+    bytes_llc: Optional[float] = None
     bytes_mem: Optional[float] = None
 
 
@@ -273,11 +273,63 @@ def _bound_to_user_label(active_roof: str) -> str:
         return "compute bound"
     if active_roof == "l1":
         return "L1 bound"
-    if active_roof == "lsc":
-        return "LSC bound"
+    if active_roof == "llc":
+        return "LLC bound"
     if active_roof == "mem":
         return "memory bound"
     return f"{active_roof} bound"
+
+
+def _confirmation_counter(active_roof: str) -> Optional[str]:
+    if active_roof == "l1":
+        return "bytes_l1"
+    if active_roof == "llc":
+        return "bytes_llc"
+    if active_roof == "mem":
+        return "bytes_mem"
+    return None
+
+
+def _print_tuning_guidance(active_roof: str, measured: Measured, used_estimated_mem: bool) -> None:
+    _print_section("Tuning Guidance")
+
+    if active_roof == "compute":
+        print("Target level: compute")
+        print("Primary unit: math pipeline / instruction throughput")
+        print("Primary direction: improve math utilization before increasing data-movement-oriented tile sizes")
+        print("Tradeoff: larger tiles may still hurt occupancy or cache behavior even if they increase arithmetic intensity")
+        return
+
+    if active_roof == "l1":
+        print("Target level: L1")
+        print("Primary unit: tiledMMA / subgroup tile")
+        print("Primary direction: adjust tiledMMA shape, usually M_sg first and then N_tile")
+        print("Tradeoff: larger tiledMMA shapes may improve AI_L1_sg but increase GRF pressure and reduce occupancy")
+        print("Practical rule: prefer the smallest tiledMMA change that crosses the L1 balance point")
+    elif active_roof == "llc":
+        print("Target level: LLC")
+        print("Primary unit: block / work-group tile")
+        print("Primary direction: improve block-level reuse and block scheduling locality")
+        print("Tradeoff: larger block tiles may improve AI_LLC_wg but increase outer-cache working set, reduce hit rate, and reduce resident blocks")
+        print("Practical rule: prefer the smallest block-level change that crosses the LLC balance point while preserving cache residency")
+    elif active_roof == "mem":
+        print("Target level: DRAM")
+        print("Primary unit: full operator plus schedule / reuse model")
+        print("Primary direction: reduce true memory-side bytes first")
+        print("Tradeoff: subgroup or block tiling may help indirectly, but larger tiles are not evidence of lower bytes_mem by themselves")
+        if used_estimated_mem:
+            print("Note: current memory diagnosis is based on estimated lower-bound memory bytes; measured bytes_mem is preferred before making aggressive tile changes")
+
+    counter = _confirmation_counter(active_roof)
+    if counter is not None:
+        if counter == "bytes_l1" and measured.bytes_l1 is None:
+            print("Validation counter: bytes_l1 (not provided)")
+        elif counter == "bytes_llc" and measured.bytes_llc is None:
+            print("Validation counter: bytes_llc (not provided)")
+        elif counter == "bytes_mem" and measured.bytes_mem is None:
+            print("Validation counter: bytes_mem (not provided)")
+        else:
+            print(f"Validation counter: {counter}")
 
 
 def gemm_flops(m: int, n: int, k: int) -> float:
@@ -315,21 +367,22 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
     print(f"Bytes_mem (est min): {_fmt_num(bytes_min_mem, 'B')}")
     print(f"peak_tflops: {roofs.peak_tflops}")
     print(f"bw_l1_gbs: {_fmt_num(roofs.bw_l1_gbs)}")
-    print(f"bw_lsc_gbs: {_fmt_num(roofs.bw_lsc_gbs)}")
+    print(f"bw_llc_gbs: {_fmt_num(roofs.bw_llc_gbs)}")
     print(f"bw_mem_gbs: {_fmt_num(roofs.bw_mem_gbs)}")
 
     _print_section("Arithmetic Intensity")
+    used_estimated_mem = measured.bytes_mem is None
     ai_mem = _ai(flops, measured.bytes_mem if measured.bytes_mem is not None else bytes_min_mem)
     ai_l1 = _ai(flops, measured.bytes_l1)
-    ai_lsc = _ai(flops, measured.bytes_lsc)
+    ai_llc = _ai(flops, measured.bytes_llc)
 
     print(f"AI_mem  (flop/byte): {_fmt_num(ai_mem)}")
-    print(f"AI_lsc  (flop/byte): {_fmt_num(ai_lsc)} (requires bytes_lsc)")
+    print(f"AI_llc  (flop/byte): {_fmt_num(ai_llc)} (requires bytes_llc)")
     print(f"AI_l1   (flop/byte): {_fmt_num(ai_l1)} (requires bytes_l1)")
 
     _print_section("Roofline Ceilings (TFLOP/s)")
     roof_l1 = _roof_perf_tflops(ai_l1, roofs.bw_l1_gbs)
-    roof_lsc = _roof_perf_tflops(ai_lsc, roofs.bw_lsc_gbs)
+    roof_llc = _roof_perf_tflops(ai_llc, roofs.bw_llc_gbs)
     roof_mem = _roof_perf_tflops(ai_mem, roofs.bw_mem_gbs)
 
     if roof_l1 is not None:
@@ -337,10 +390,10 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
     else:
         print("L1  roof: n/a (need bw_l1_gbs and bytes_l1)")
 
-    if roof_lsc is not None:
-        print(f"LSC roof: {_fmt_num(roof_lsc)}")
+    if roof_llc is not None:
+        print(f"LLC roof: {_fmt_num(roof_llc)}")
     else:
-        print("LSC roof: n/a (need bw_lsc_gbs and bytes_lsc)")
+        print("LLC roof: n/a (need bw_llc_gbs and bytes_llc)")
 
     if roof_mem is not None:
         print(f"MEM roof: {_fmt_num(roof_mem)}")
@@ -350,10 +403,10 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
     print(f"Compute roof: {_fmt_num(roofs.peak_tflops)}")
 
     # Determine active roof from what we have.
-    # If we lack bytes_l1/bytes_lsc, we cannot meaningfully classify L1 vs LSC.
+    # If we lack bytes_l1/bytes_llc, we cannot meaningfully classify L1 vs LLC.
     available_roofs = {
         "l1": roof_l1,
-        "lsc": roof_lsc,
+        "llc": roof_llc,
         "mem": roof_mem,
     }
 
@@ -362,6 +415,7 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
     _print_section("Conclusion")
     print(f"Bound (roofline): {_bound_to_user_label(active_roof)}")
     print(f"Active ceiling: {_fmt_num(bound_tflops)} TFLOP/s")
+    _print_tuning_guidance(active_roof, measured, used_estimated_mem)
 
     # Extra: if time is given, report achieved metrics and a sanity-check.
     if measured.time_ms is not None and measured.time_ms > 0:
@@ -375,13 +429,13 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
             return (bytes_moved / secs) / 1e9
 
         ach_mem = _ach_bw(measured.bytes_mem)
-        ach_lsc = _ach_bw(measured.bytes_lsc)
+        ach_llc = _ach_bw(measured.bytes_llc)
         ach_l1 = _ach_bw(measured.bytes_l1)
 
         if ach_mem is not None:
             print(f"Achieved BW_mem: {_fmt_num(ach_mem)} GB/s")
-        if ach_lsc is not None:
-            print(f"Achieved BW_lsc: {_fmt_num(ach_lsc)} GB/s")
+        if ach_llc is not None:
+            print(f"Achieved BW_llc: {_fmt_num(ach_llc)} GB/s")
         if ach_l1 is not None:
             print(f"Achieved BW_l1 : {_fmt_num(ach_l1)} GB/s")
 
@@ -395,13 +449,13 @@ def analyze(flops: float, bytes_min_mem: float, dtype: str, roofs: Roofs, measur
         missing.append("bw_mem_gbs")
     if roofs.bw_l1_gbs is not None and measured.bytes_l1 is None:
         missing.append("bytes_l1")
-    if roofs.bw_lsc_gbs is not None and measured.bytes_lsc is None:
-        missing.append("bytes_lsc")
+    if roofs.bw_llc_gbs is not None and measured.bytes_llc is None:
+        missing.append("bytes_llc")
 
     if missing:
         print("Missing for finer attribution: " + ", ".join(missing))
-        if (measured.bytes_l1 is None and measured.bytes_lsc is None) and (roofs.bw_l1_gbs is not None or roofs.bw_lsc_gbs is not None):
-            print("Tip: to decide L1 vs LSC bound, provide bytes_l1/bytes_lsc from profiler counters.")
+        if (measured.bytes_l1 is None and measured.bytes_llc is None) and (roofs.bw_l1_gbs is not None or roofs.bw_llc_gbs is not None):
+            print("Tip: to decide L1 vs LLC bound, provide bytes_l1/bytes_llc from profiler counters.")
 
     return 0
 
@@ -421,14 +475,14 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--frequency-mhz",
         type=float,
-        help="Override runtime frequency in MHz; used to scale preset-derived compute/L1/LSC roofs when peak_tflops is not explicitly provided",
+        help="Override runtime frequency in MHz; used to scale preset-derived compute/L1/LLC roofs when peak_tflops is not explicitly provided",
     )
     p.add_argument("--bw-l1-gbs", type=float)
-    p.add_argument("--bw-lsc-gbs", type=float)
+    p.add_argument("--bw-llc-gbs", type=float)
     p.add_argument("--bw-mem-gbs", type=float)
     p.add_argument("--time-ms", type=float)
     p.add_argument("--bytes-l1", type=float)
-    p.add_argument("--bytes-lsc", type=float)
+    p.add_argument("--bytes-llc", type=float)
     p.add_argument("--bytes-mem", type=float)
 
 
@@ -468,13 +522,13 @@ def main() -> int:
     roofs = Roofs(
         peak_tflops=peak_tflops,
         bw_l1_gbs=args.bw_l1_gbs,
-        bw_lsc_gbs=args.bw_lsc_gbs,
+        bw_llc_gbs=args.bw_llc_gbs,
         bw_mem_gbs=args.bw_mem_gbs,
     )
     measured = Measured(
         time_ms=args.time_ms,
         bytes_l1=args.bytes_l1,
-        bytes_lsc=args.bytes_lsc,
+        bytes_llc=args.bytes_llc,
         bytes_mem=args.bytes_mem,
     )
 
